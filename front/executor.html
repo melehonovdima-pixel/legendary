@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Личный кабинет исполнителя</title>
+    <style>
+        body { font-family: Arial; margin: 20px; }
+        .tasks { display: flex; gap: 20px; }
+        .task-column { flex: 1; border: 1px solid #ccc; padding: 15px; }
+        .task { background: #f9f9f9; padding: 10px; margin: 10px 0; border-left: 4px solid #2196F3; }
+        .task-done { border-left-color: #4CAF50; }
+        .task-overdue { border-left-color: #f44336; }
+        button { margin: 5px; padding: 5px 10px; cursor: pointer; }
+        .menu { margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <h1>Личный кабинет исполнителя</h1>
+    <p><strong>Исполнитель:</strong> <span id="executor-name">Загрузка...</span></p>
+    
+    <div class="menu">
+        <button onclick="showTasks('active')">Текущие задачи</button>
+        <button onclick="showTasks('done')">Выполненные</button>
+        <button onclick="showReport()">Сформировать отчет</button>
+        <button onclick="logout()">Выйти</button>
+    </div>
+    
+    <div id="tasks-active">
+        <h2>Текущие задачи <span id="active-count">(0)</span></h2>
+        <div id="active-tasks-container">
+            <p>Загрузка...</p>
+        </div>
+    </div>
+    
+    <div id="tasks-done" style="display:none;">
+        <h2>Выполненные задачи</h2>
+        <div id="done-tasks-container">
+            <p>Загрузка...</p>
+        </div>
+    </div>
+    
+    <div id="report-form" style="display:none; margin-top: 20px;">
+        <h2>Отчет о работе</h2>
+        <label>Период с:</label> <input type="date" id="report-from"> 
+        <label>по:</label> <input type="date" id="report-to">
+        <button onclick="generateReport()">Сформировать отчет</button>
+        <div id="report-result" style="margin-top: 20px; padding: 10px; background: #e3f2fd; display:none;"></div>
+    </div>
+
+    <script src="api.js"></script>
+    <script>
+        let currentUser = null;
+        let allRequests = [];
+        
+        async function checkAuth() {
+            if (!api.getToken()) {
+                window.location.href = 'index.html';
+                return false;
+            }
+            
+            try {
+                currentUser = await api.getCurrentUser();
+                if (currentUser.role !== 'executor') {
+                    alert('Доступ запрещен. Только для исполнителей.');
+                    window.location.href = 'index.html';
+                    return false;
+                }
+                return true;
+            } catch (error) {
+                window.location.href = 'index.html';
+                return false;
+            }
+        }
+        
+        async function loadUserInfo() {
+            document.getElementById('executor-name').textContent = currentUser.fullname;
+        }
+        
+        async function loadTasks() {
+            try {
+                allRequests = await api.getRequests();
+                displayActiveTasks();
+                displayCompletedTasks();
+            } catch (error) {
+                console.error('Error loading tasks:', error);
+                alert('Ошибка загрузки задач');
+            }
+        }
+        
+        function displayActiveTasks() {
+            const activeTasks = allRequests.filter(r => 
+                r.status === 'assigned' || r.status === 'in_progress'
+            );
+            
+            const container = document.getElementById('active-tasks-container');
+            document.getElementById('active-count').textContent = `(${activeTasks.length})`;
+            
+            if (activeTasks.length === 0) {
+                container.innerHTML = '<p>Нет активных задач</p>';
+                return;
+            }
+            
+            container.innerHTML = '';
+            
+            activeTasks.forEach(task => {
+                const taskDiv = document.createElement('div');
+                taskDiv.className = 'task';
+                
+                const deadline = task.deadline ? new Date(task.deadline).toLocaleDateString() : 'Не указан';
+                const clientAddr = task.client && task.client.address ? task.client.address : 'Не указан';
+                
+                taskDiv.innerHTML = `
+                    <strong>№${task.id}</strong> - ${getTypeName(task.type)}<br>
+                    <small>Адрес: ${clientAddr}</small><br>
+                    <small>Описание: ${task.description}</small><br>
+                    <small>Срок: до ${deadline}</small><br>
+                    ${task.status === 'assigned' 
+                        ? `<button onclick="startTask(${task.id})">Начать работу</button>` 
+                        : `<button onclick="completeTask(${task.id})">Завершить</button>`
+                    }
+                `;
+                
+                container.appendChild(taskDiv);
+            });
+        }
+        
+        function displayCompletedTasks() {
+            const completedTasks = allRequests.filter(r => r.status === 'completed');
+            
+            const container = document.getElementById('done-tasks-container');
+            
+            if (completedTasks.length === 0) {
+                container.innerHTML = '<p>Нет выполненных задач</p>';
+                return;
+            }
+            
+            container.innerHTML = '';
+            
+            completedTasks.forEach(task => {
+                const taskDiv = document.createElement('div');
+                taskDiv.className = 'task task-done';
+                
+                const completedDate = task.completed_at ? new Date(task.completed_at).toLocaleDateString() : '';
+                
+                taskDiv.innerHTML = `
+                    <strong>№${task.id}</strong> - ${getTypeName(task.type)} (${completedDate})<br>
+                    <small>${task.description}</small><br>
+                `;
+                
+                container.appendChild(taskDiv);
+            });
+        }
+        
+        function showTasks(type) {
+            document.getElementById('tasks-active').style.display = type === 'active' ? 'block' : 'none';
+            document.getElementById('tasks-done').style.display = type === 'done' ? 'block' : 'none';
+            document.getElementById('report-form').style.display = 'none';
+        }
+        
+        function showReport() {
+            document.getElementById('tasks-active').style.display = 'none';
+            document.getElementById('tasks-done').style.display = 'none';
+            document.getElementById('report-form').style.display = 'block';
+            
+            // Установить даты по умолчанию
+            const today = new Date();
+            const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+            document.getElementById('report-from').valueAsDate = firstDay;
+            document.getElementById('report-to').valueAsDate = today;
+        }
+        
+        async function startTask(taskId) {
+            if(!confirm('Начать работу над задачей №' + taskId + '?')) return;
+            
+            try {
+                await api.updateRequest(taskId, {
+                    status: 'in_progress'
+                });
+                alert('Задача начата! Жилец будет уведомлен.');
+                await loadTasks();
+            } catch (error) {
+                alert('Ошибка: ' + error.message);
+            }
+        }
+        
+        async function completeTask(taskId) {
+            if(!confirm('Завершить задачу №' + taskId + '?\n(В реальной системе здесь была бы загрузка фотоотчета)')) return;
+            
+            try {
+                await api.updateRequest(taskId, {
+                    status: 'completed'
+                });
+                alert('Задача завершена!');
+                await loadTasks();
+            } catch (error) {
+                alert('Ошибка: ' + error.message);
+            }
+        }
+        
+        function generateReport() {
+            const dateFrom = document.getElementById('report-from').value;
+            const dateTo = document.getElementById('report-to').value;
+            
+            if (!dateFrom || !dateTo) {
+                alert('Выберите период');
+                return;
+            }
+            
+            const from = new Date(dateFrom);
+            const to = new Date(dateTo);
+            
+            const completedInPeriod = allRequests.filter(r => {
+                if (r.status !== 'completed' || !r.completed_at) return false;
+                const completedDate = new Date(r.completed_at);
+                return completedDate >= from && completedDate <= to;
+            });
+            
+            const resultDiv = document.getElementById('report-result');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = `
+                <h3>Отчет за период ${from.toLocaleDateString()} - ${to.toLocaleDateString()}:</h3>
+                <p>Выполнено заявок: <strong>${completedInPeriod.length}</strong></p>
+                <p>Всего задач в работе: <strong>${allRequests.filter(r => r.status === 'in_progress').length}</strong></p>
+                <p>Ожидают начала: <strong>${allRequests.filter(r => r.status === 'assigned').length}</strong></p>
+            `;
+        }
+        
+        function getTypeName(type) {
+            const types = {
+                'plumbing': 'Сантехника',
+                'electricity': 'Электрика',
+                'elevator': 'Лифт',
+                'cleaning': 'Уборка',
+                'heating': 'Отопление',
+                'other': 'Другое'
+            };
+            return types[type] || type;
+        }
+        
+        function logout() {
+            api.removeToken();
+            window.location.href = 'index.html';
+        }
+        
+        document.addEventListener('DOMContentLoaded', async function() {
+            if (await checkAuth()) {
+                await loadUserInfo();
+                await loadTasks();
+            }
+        });
+    </script>
+</body>
+</html>
